@@ -1,6 +1,6 @@
 [package]
 name = "rush"
-version = "0.0.1"
+version = "0.1.0"
 
 [lib]
 name = "builtins"
@@ -8,3 +8,4 @@ name = "builtins"
 [dependencies]
 regex = "0.1"
 regex_macros = "0.1"
+termios = "0.2"

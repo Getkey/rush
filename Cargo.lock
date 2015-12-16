@@ -1,9 +1,10 @@
 [root]
 name = "rush"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "regex 0.1.43 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex_macros 0.1.24 (registry+https://github.com/rust-lang/crates.io-index)",
+ "termios 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -16,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
@@ -24,7 +25,7 @@ name = "memchr"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
- "libc 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -48,5 +49,13 @@ version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "regex 0.1.43 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "termios"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "libc 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
