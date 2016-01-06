@@ -1,16 +1,39 @@
-pub fn cd(path: &str) {
-	use std::env;
-	use std::path::Path;
+#[macro_use]
+mod print_macros;
 
-	match env::set_current_dir(Path::new(path)) {
+const TOO_MANY_ARGS: &'static str = "Error: Too many arguments were supplied";
+
+pub fn cd(args: &[&str]) {
+	use std::env;
+	use std::path;
+
+	let path = match args.len() {
+		 0 => match env::home_dir() {
+			Some(path) => path,
+			None => return,
+		},
+		1 => path::PathBuf::from(args[0]),
+		_ => {
+			println_stderr!("{}", TOO_MANY_ARGS);
+			return;
+		},
+	};
+
+	match env::set_current_dir(path) {
 		Ok(_) => {},
-		Err(err) => println!("{}", err),
+		Err(err) => println_stderr!("{}", err),
 	}
 }
 
-pub fn exit(status: &str) {
-	match status.parse::<u8>() {
-		Ok(sta) => println!("{}", sta),
-		Err(err) => println!("{}", err),
+pub fn exit(args: &[&str]) {
+	use std::process;
+
+	match args.len() {
+		0 => process::exit(0),
+		1 => match args[0].parse::<u8>() {
+			Ok(sta) => process::exit(sta as i32),
+			Err(err) => println_stderr!("{}", err),
+		},
+		_ => println_stderr!("{}", TOO_MANY_ARGS),
 	}
 }
