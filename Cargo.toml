@@ -6,6 +6,4 @@ version = "0.1.0"
 name = "builtins"
 
 [dependencies]
-regex = "0.1"
-regex_macros = "0.1"
 termios = "0.2"

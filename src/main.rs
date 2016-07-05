@@ -2,10 +2,6 @@
 #![feature(io)]//unstable io
 #![feature(type_ascription)]//see history::History.push()
 
-#![feature(plugin)]
-#![plugin(regex_macros)]
-extern crate regex;
-
 extern crate libc;
 extern crate termios;
 
