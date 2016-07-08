@@ -1,6 +1,5 @@
 #![feature(libc)]
 #![feature(io)]//unstable io
-#![feature(type_ascription)]//see history::History.push()
 
 extern crate libc;
 extern crate termios;

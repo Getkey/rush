@@ -6,7 +6,7 @@ use std::str::Chars;
 pub fn read(command_line: &str) {
 	let mut tree = parse_expression(&mut command_line.chars());
 
-	println!("{}", tree.execute());
+	tree.execute_command();
 }
 
 fn parse_expression(char_it: &mut Chars) -> Command {
@@ -60,12 +60,12 @@ impl Command {
 			params: Vec::new(),
 		}
 	}
-	fn execute(&mut self) -> String {//returns stdout - possibly return a array of strings?
+	fn get_final_arglist(&mut self) -> Vec<&str> {
 		let mut final_arglist: Vec<&str> = Vec::with_capacity(self.params.len());
 
 		for arg in self.params.iter_mut() { // substitue subcommands recursively
 			let stdout = if let Param::Cmd(ref mut subcommand) = *arg {
-				Some(subcommand.execute())
+				Some(subcommand.execute_subcommand())
 			} else {
 				None
 			};
@@ -79,15 +79,23 @@ impl Command {
 			}
 		}
 
-		let cmd_str: &str = &self.cmd; // does not infer automatically as of rust 1.9
-		match cmd_str {
+		final_arglist
+	}
+	fn execute_command(&mut self) {//returns stdout - possibly return a array of strings?
+		match &self.cmd[..] {
 			"" => {},
 			/*"cd" => builtins::cd(&self.params),
 			"exit" => builtins::exit(&self.params),*/
-			_ => invoke(&self.cmd, &final_arglist),
+			_ => invoke_command(self),
 		};
-
-		"this is a sample stdout return".to_string()
+	}
+	fn execute_subcommand(&mut self) -> String {
+		match &self.cmd[..] {
+			/*"" => {},
+			"cd" => builtins::cd(&self.params),
+			"exit" => builtins::exit(&self.params),*/
+			_ => invoke_subcommand(self),
+		}
 	}
 }
 enum Param {
@@ -95,13 +103,28 @@ enum Param {
 	Cmd(Command),
 
 }
-
-fn invoke(command: &str, args: &[&str]) {
+fn invoke_command(command: &mut Command) {
 	use std::process::Command;
-	match Command::new(command).args(args).spawn() {
-		Ok(mut subproc) => {
-			subproc.wait();
-		},
-		Err(err) => println!("{}", err),
+	match Command::new(&command.cmd)
+		.args(&command.get_final_arglist())
+		.spawn() {
+			Ok(mut subproc) => {
+				subproc.wait();
+			},
+			Err(err) => println!("{}", err),
 	}
+}
+fn invoke_subcommand(command: &mut Command) -> String {
+	{
+		for arg in command.get_final_arglist() {
+			println!("shitty debugging: {}", arg);
+		}
+	}
+	use std::process::Command;
+	let output = Command::new(&command.cmd)
+		.args(&command.get_final_arglist())
+		.output()
+		.expect("Failed to start command");
+
+	String::from_utf8(output.stdout).unwrap()
 }
