@@ -4,50 +4,91 @@ use std::str::Chars;
 
 
 pub fn read(command_line: &str) {
-	let mut tree = parse_expression(&mut command_line.chars());
+	match control_machine(&mut command_line.chars()) {
+		Ok(mut tree) => tree.execute_command(),
+		Err(err) => println!("{}", err),
+	}
 
-	tree.execute_command();
 }
 
-fn parse_expression(char_it: &mut Chars) -> Command {
+#[derive(PartialEq, Copy, Clone)] // this enum takes 1B therefore copying it is better than having a 4B pointer (on 32bit machines) or a 8B pointer (on 64 bit machines)
+pub enum State {
+	Start,
+	StrArg,
+	SubcommandEnd,
+}
+
+fn tokenize(char_it: &mut Chars) -> (Result<Command, &'static str>, State) { // uses a recursive automaton
+	use self::State::*;
 	let mut cmd = Command::new();
 
-	let mut tokens_are_args = false;
-	let mut in_leading_whitespace = true;
-	let mut current_arg: Option<String> = None;
+	let mut state = State::Start;
 
-	while let Some(char) = char_it.next() {
-		match char {
-			'(' => cmd.params.push(Param::Cmd(parse_expression(char_it))),
-			')' => return cmd,
-			' ' | '\t' => { // TODO: add support for other types of whitespace
-				if !in_leading_whitespace { // ignore leading whitespace
-					tokens_are_args = true;
-				} else if let Some(arg_str) = current_arg {
-					current_arg = None;
-					cmd.params.push(Param::Arg(arg_str));
-				}
-			},
-			_ => {
-				in_leading_whitespace = false;
-				if tokens_are_args {
-					match current_arg {
-						Some(ref mut arg_str) => arg_str.push(char),
-						None => {
-							let mut arg_str = String::new();
-							arg_str.push(char);
-							current_arg = Option::Some(arg_str);
-						},
+	loop {
+		if let Some(curr_char) = char_it.next() {
+			match (state, curr_char) {
+				(Start, ')') => {
+					state = SubcommandEnd;
+					return (Ok(cmd), state);
+				},
+				(Start, ' ') | (Start, '\t') => {},
+				(Start, '(') => {
+					// do recursion
+					let (res, recurState) = tokenize(char_it);
+					if recurState != SubcommandEnd {
+						panic!("ERROR");
+					} else if let Err(_) = res {
+						return (res, state);
 					}
-				} else {
-					cmd.cmd.push(char) //TODO: use a &str instead by marking the first `_` byte, more efficient
-				}
-			},
+				},
+				(Start, _) => {
+					state = StrArg
+					// create string
+					// push character
+				},
+
+				(StrArg, ')') => {
+					state = SubcommandEnd;
+					return (Ok(cmd), state);
+				},
+				(StrArg, ' ') | (StrArg, '\t') => {
+					state = Start;
+					// append string to arg vector
+				},
+				(StrArg, _) => {
+					//push character
+				},
+
+				(SubcommandEnd, _) => {
+					unreachable!();
+				},
+			}
+		} else {
+			if state == StrArg {
+				// append string to arg array
+			}
+			break;
 		}
 	}
 
-	cmd
+	(Ok(cmd), state)
 }
+
+fn control_machine(char_it: &mut Chars) -> Result<Command, &'static str> {
+	use self::State::*;
+
+	let (res, state) = tokenize(char_it);
+
+	if state != Start && state != StrArg {
+		Err("There is an error")
+	} else {
+		res
+	}
+}
+
+//TODO:
+//struct Command(Vec<Param>);
+//https://doc.rust-lang.org/book/structs.html
 
 struct Command {
 	cmd: String,
