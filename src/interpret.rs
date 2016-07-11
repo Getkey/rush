@@ -7,11 +7,12 @@ pub fn read(command_line: &str) {
 		Err(err) => println!("{}", err),
 	}*/
 	let token_list = tokenize(command_line);
-	let token_iter = token_list.iter();
+	let mut token_iter = token_list.iter();
+	let tree = generate_tree(&mut token_iter);
 }
 
-#[derive(PartialEq, Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
-pub enum State {
+#[derive(Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
+pub enum TokenMachineState {
 	Start,
 	StrCmd(usize),
 	SeparateWs,
@@ -26,7 +27,7 @@ pub enum Token<'a, 'b> {
 }
 
 fn tokenize(command_line: &str) -> Vec<Token> {
-	use self::State::*;
+	use self::TokenMachineState::*;
 	use self::Token::*;
 
 	let mut state = Start;
@@ -76,112 +77,101 @@ fn tokenize(command_line: &str) -> Vec<Token> {
 	}
 }
 
-use std::slice::Iter;
-
-fn generate_tree<'a>(token_list: Iter<Vec<Token>>) -> Result<Command<'a>, &'static str> {
-	Err("Empy commands are not allowed")
-	/*use self::State::*;
-	let mut cmd = Command::new();
-
-	let mut state = State::Start;
-	let slice_start = 0; // whatever, doesn't matter
-	let oldI = 0;
-
-	loop {
-		if let Some((i, curr_char)) = char_it.next() {
-			match (state, curr_char) {
-				(Start, ')') => return (Err("Empty subcommands are not allowed"), state),
-				(Start, ' ') | (Start, '\t') => {},
-				(Start, '(') => {
-					// do recursion
-					let (res, recur_state) = tokenize(char_it);
-					if recur_state != SubcommandEnd {
-						panic!("ERROR");
-					} else if let Err(_) = res {
-						return (res, state);
-					} else {
-						cmd.cmd.push(Param::Cmd(res));
-					}
-				},
-				(Start, _) => {
-					state = StrCmd;
-					slice_start = i;
-				},
-
-				(StrCmd, ')') | (SeparateWs, ')') | (StrArg, ')') => {
-					state = SubcommandEnd;
-					return (Ok(cmd), state);
-				},
-
-				(StrCmd, ' ') | (StrCmd, '\t') => {
-				//	cmd.cmd = &
-				},
-				(StrCmd, _) => {},
-
-				(SeparateWs, ' ') | (SeparateWs, '\t') => {},
-				(SeparateWs, _) => {
-					state = StrArg;
-					cmd.params.push(Param::Arg(curr_char.to_string()));
-				},
-
-				(StrArg, ' ') | (StrArg, '\t') => {
-					state = SeparateWs;
-					// append string to arg vector
-				},
-				(StrArg, _) => {
-					let i = cmd.params.len() - 1;
-					if let Param::Arg(ref mut str_arg) = cmd.params[i] {
-						str_arg.push(curr_char);
-					} else {
-						unreachable!();
-					}
-					//push character
-				},
-
-				(SubcommandEnd, _) => {
-					unreachable!();
-				},
-			}
-			oldI = i;
-		} else {
-			if state == StrArg {
-				// append string to arg array
-			}
-			break;BNF
-		}
-	}
-
-	(Ok(cmd), state)*/
+#[derive(PartialEq, Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
+enum ParseMachineState {
+	Start,
+	//CollectCmd,
+	CollectArg,
+	SubcommandEnd,
 }
 
-/*fn control_machine(command_line: &str) -> Result<Command, &'static str> {
-	use self::State::*;
+use std::slice::Iter;
 
-	let (res, state) = tokenize(command_line.char_indices(), command_line);
+fn generate_tree<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> Result<Command<'a>, &'static str> {
+	use self::ParseMachineState::*;
 
-	if state != Start && state != StrArg {
-		Err("There is an error")
+	let (res, state) = parse(token_iter);
+
+	if state != CollectArg { // accepting state when not doing recursion
+		Err("Parse error")
 	} else {
 		res
 	}
-}*/
+}
+
+fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'static str>, ParseMachineState) {
+	use self::ParseMachineState::*;
+	use self::Token::*;
+
+	let mut state = Start;
+	let mut cmd = Command::new();
+
+	loop {
+		if let Some(token) = token_iter.next() {
+			match (state, token) {
+				(Start, &Cmd(cmd_name)) => {
+					cmd.cmd = Some(Box::new(Param::Arg(cmd_name)));
+					state = CollectArg;
+				},
+				(Start, &LeftParen) => {
+					// do recursion
+					let (res, recur_state) = parse(token_iter);
+					if recur_state != SubcommandEnd {
+						panic!("ERROR");
+					} else {
+						match res {
+							Err(_) => return(res, state),
+							Ok(subcmd) => cmd.cmd = Some(Box::new(Param::Cmd(subcmd))),
+						}
+					}
+				},
+				(Start, &RightParen) => return (Err("Unexpected ')'"), state),
+				(Start, &Arg(_)) => unreachable!(), // if that happens the tokenizer is buggy
+
+				(CollectArg, &Arg(arg_str)) => {
+					cmd.params.push(Param::Arg(arg_str));
+				}
+				(CollectArg, &Cmd(_)) => unreachable!(), // if that happens the tokenizer is buggy
+				(CollectArg, &RightParen) => return (Ok(cmd), SubcommandEnd),
+				(CollectArg, &LeftParen) => {
+					//do recursion
+					let (res, recur_state) = parse(token_iter);
+					if recur_state != SubcommandEnd {
+						panic!("ERROR");
+					} else {
+						match res {
+							Err(_) => return(res, state),
+							Ok(subcmd) => cmd.params.push(Param::Cmd(subcmd)),
+						}
+					}
+				}
+
+				(SubcommandEnd, _) => unreachable!(),
+			}
+		} else {
+			break;
+		}
+	}
+
+	(Err("Empy commands are not allowed"), state)
+}
 
 
 struct Command<'a> {
-	cmd: &'a str,
+	cmd: Option<Box<Param<'a>>>,
 	params: Vec<Param<'a>>,
 }
 impl<'a> Command<'a> {
-	fn new(cmd: &str) -> Command {
+	fn new() -> Command<'a> {
 		Command {
-			cmd: cmd,
+			cmd: None,
 			params: Vec::new(),
 		}
 	}
 	fn get_final_arglist(&mut self) -> Vec<&str> {
 		let mut final_arglist: Vec<&str> = Vec::with_capacity(self.params.len());
 
-		for arg in self.params.iter_mut() { // substitue subcommands recursively
+		/*for arg in self.params.iter_mut() { // substitue subcommands recursively
 			let stdout = if let Param::Cmd(ref mut subcommand) = *arg {
 				Some(subcommand.execute_subcommand())
 			} else {
@@ -195,45 +185,45 @@ impl<'a> Command<'a> {
 			if let Param::Arg(ref arg_str) = *arg { // at this point this always happen because `Cmd` became `Arg`s
 				final_arglist.push(arg_str);
 			}
-		}
+		}*/
 
 		final_arglist
 	}
 	fn execute_command(&mut self) {//returns stdout - possibly return a array of strings?
-		match &self.cmd[..] {
+		/*match &self.cmd[..] {
 			"" => {},
 			/*"cd" => builtins::cd(&self.params),
 			"exit" => builtins::exit(&self.params),*/
 			_ => invoke_command(self),
-		};
+		};*/
 	}
 	fn execute_subcommand(&mut self) -> String {
-		match &self.cmd[..] {
+		/*match &self.cmd[..] {
 			/*"" => {},
 			"cd" => builtins::cd(&self.params),
 			"exit" => builtins::exit(&self.params),*/
 			_ => invoke_subcommand(self),
-		}
+		}*/ "fuck you".to_string()
 	}
 }
 enum Param<'a> {
-	Arg(String),
+	Arg(&'a str),
 	Cmd(Command<'a>),
 
 }
 fn invoke_command(command: &mut Command) {
 	use std::process::Command;
-	match Command::new(&command.cmd)
+	/*match Command::new(&command.cmd)
 		.args(&command.get_final_arglist())
 		.spawn() {
 			Ok(mut subproc) => {
 				subproc.wait();
 			},
 			Err(err) => println!("{}", err),
-	}
+	}*/
 }
 fn invoke_subcommand(command: &mut Command) -> String {
-	{
+	/*{
 		for arg in command.get_final_arglist() {
 			println!("shitty debugging: {}", arg);
 		}
@@ -244,5 +234,5 @@ fn invoke_subcommand(command: &mut Command) -> String {
 		.output()
 		.expect("Failed to start command");
 
-	String::from_utf8(output.stdout).unwrap()
+	String::from_utf8(output.stdout).unwrap()*/ "fuck you".to_string()
 }
