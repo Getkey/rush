@@ -2,13 +2,12 @@ extern crate builtins;
 
 
 pub fn read(command_line: &str) {
-	/*match control_machine(command_line) {
-		Ok(mut tree) => tree.execute_command(),
-		Err(err) => println!("{}", err),
-	}*/
 	let token_list = tokenize(command_line);
 	let mut token_iter = token_list.iter();
-	let tree = generate_tree(&mut token_iter);
+	match generate_tree(&mut token_iter) {
+		Ok(mut tree) => tree.execute_command(),
+		Err(err) => println!("{}", err),
+	}
 }
 
 #[derive(Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
@@ -78,6 +77,13 @@ fn tokenize(command_line: &str) -> Vec<Token> {
 				(StrArg(_), _) => {},
 			}
 		} else {
+			// there might be a last token undergoing the token creation process
+			// it has to be appended to the token list
+			match state {
+				StrCmd(slice_start) => token_list.push(Cmd(&command_line[slice_start..])),
+				StrArg(slice_start) => token_list.push(Arg(&command_line[slice_start..])),
+				_ => {},
+			}
 			break;
 		}
 	}
@@ -88,7 +94,6 @@ fn tokenize(command_line: &str) -> Vec<Token> {
 #[derive(PartialEq, Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
 enum ParseMachineState {
 	Start,
-	//CollectCmd,
 	CollectArg,
 	SubcommandEnd,
 }
@@ -100,7 +105,7 @@ fn generate_tree<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> Result<Command<'a>
 
 	let (res, state) = parse(token_iter);
 
-	if state != CollectArg { // accepting state when not doing recursion
+	if state != CollectArg && res.is_ok() { // accepting state when not doing recursion
 		Err("Parse error")
 	} else {
 		res
@@ -110,6 +115,8 @@ fn generate_tree<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> Result<Command<'a>
 fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'static str>, ParseMachineState) {
 	use self::ParseMachineState::*;
 	use self::Token::*;
+	use std::ptr;
+	use std::mem;
 
 	let mut state = Start;
 	let mut cmd = Command::new();
@@ -118,36 +125,49 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 		if let Some(token) = token_iter.next() {
 			match (state, token) {
 				(Start, &Cmd(cmd_name)) => {
-					cmd.cmd = Some(Box::new(Param::Arg(cmd_name)));
+					unsafe {
+						ptr::write(&mut cmd.cmd, Box::new(Param::Arg(cmd_name)));
+					}
 					state = CollectArg;
 				},
 				(Start, &LeftParen) => {
 					// do recursion
 					let (res, recur_state) = parse(token_iter);
 					match res {
-						Err(_) => return(res, state),
+						Err(_) => {
+							mem::forget(cmd.cmd);
+							return (res, state)
+						},
 						Ok(subcmd) => {
 							if recur_state != SubcommandEnd {
-								panic!("ERROR");
+								mem::forget(cmd.cmd);
+								return (Err("Error"), state);
 							} else {
-								cmd.cmd = Some(Box::new(Param::Cmd(subcmd)));
+								unsafe {
+									ptr::write(&mut cmd.cmd, Box::new(Param::Cmd(subcmd)));
+								}
 							}
 						},
 					}
 				},
-				(Start, &RightParen) => return (Err("Unexpected ')'"), state),
+				(Start, &RightParen) => {
+					mem::forget(cmd.cmd);
+					return (Err("Unexpected ')'"), state)
+				},
 				(Start, &Arg(_)) => unreachable!(), // if that happens the tokenizer is buggy
 
 				(CollectArg, &Arg(arg_str)) => {
 					cmd.params.push(Param::Arg(arg_str));
 				}
 				(CollectArg, &Cmd(_)) => unreachable!(), // if that happens the tokenizer is buggy
-				(CollectArg, &RightParen) => return (Ok(cmd), SubcommandEnd),
+				(CollectArg, &RightParen) => {
+					return (Ok(cmd), SubcommandEnd);
+				},
 				(CollectArg, &LeftParen) => {
 					//do recursion
 					let (res, recur_state) = parse(token_iter);
 					match res {
-						Err(_) => return(res, state),
+						Err(_) => return (res, state),
 						Ok(subcmd) => {
 							if recur_state != SubcommandEnd {
 								panic!("ERROR");
@@ -165,19 +185,28 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 		}
 	}
 
-	(Err("Empy commands are not allowed"), state)
+	if state == Start {
+		mem::forget(cmd.cmd);
+		(Err("Empty commands are not allowed"), state)
+	} else {
+		(Ok(cmd), state)
+	}
 }
 
 
 struct Command<'a> {
-	cmd: Option<Box<Param<'a>>>,
+	cmd: Box<Param<'a>>,
 	params: Vec<Param<'a>>,
 }
 impl<'a> Command<'a> {
 	fn new() -> Command<'a> {
-		Command {
-			cmd: None,
-			params: Vec::new(),
+		use std::mem;
+
+		unsafe {
+			Command {
+				cmd: mem::uninitialized(),
+				params: Vec::new(),
+			}
 		}
 	}
 	fn get_final_arglist(&mut self) -> Vec<&str> {
@@ -264,6 +293,16 @@ mod tests {
 		assert_eq!(
 			[LeftParen, RightParen],
 			tokenize("()").as_slice()
+		);
+
+		assert_eq!(
+			[Cmd("echo")],
+			tokenize("echo").as_slice()
+		);
+
+		assert_eq!(
+			[Cmd("echo"), Arg("lol")],
+			tokenize("echo lol").as_slice()
 		);
 	}
 }
