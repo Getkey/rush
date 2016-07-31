@@ -12,14 +12,15 @@ pub fn read(command_line: &str) {
 }
 
 #[derive(Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
-pub enum TokenMachineState {
+enum TokenMachineState {
 	Start,
 	StrCmd(usize),
 	SeparateWs,
 	StrArg(usize),
 }
 
-pub enum Token<'a, 'b> {
+#[derive(PartialEq, Debug)] // used for tests
+enum Token<'a, 'b> {
 	LeftParen,
 	RightParen,
 	Cmd(&'a str),
@@ -40,10 +41,12 @@ fn tokenize(command_line: &str) -> Vec<Token> {
 			match (state, curr_char) {
 				(Start, ' ') | (Start, '\t') => {},
 				(Start, '(') => token_list.push(LeftParen),
+				(Start, ')') => token_list.push(RightParen), // this is invalid but it's the parser's job to find it out
 				(Start, _) => state = StrCmd(i),
 
 				(StrCmd(slice_start), ')') => {
 					token_list.push(Cmd(&command_line[slice_start..i]));
+					token_list.push(RightParen);
 					state = Start;
 				},
 				(StrCmd(slice_start), ' ') | (StrCmd(slice_start), '\t') => {
@@ -69,12 +72,17 @@ fn tokenize(command_line: &str) -> Vec<Token> {
 				},
 				(StrArg(slice_start), ')') => {
 					token_list.push(Arg(&command_line[slice_start..i]));
+					token_list.push(RightParen);
 					state = Start;
 				}
 				(StrArg(_), _) => {},
 			}
+		} else {
+			break;
 		}
 	}
+
+	token_list
 }
 
 #[derive(PartialEq, Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
@@ -116,13 +124,15 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 				(Start, &LeftParen) => {
 					// do recursion
 					let (res, recur_state) = parse(token_iter);
-					if recur_state != SubcommandEnd {
-						panic!("ERROR");
-					} else {
-						match res {
-							Err(_) => return(res, state),
-							Ok(subcmd) => cmd.cmd = Some(Box::new(Param::Cmd(subcmd))),
-						}
+					match res {
+						Err(_) => return(res, state),
+						Ok(subcmd) => {
+							if recur_state != SubcommandEnd {
+								panic!("ERROR");
+							} else {
+								cmd.cmd = Some(Box::new(Param::Cmd(subcmd)));
+							}
+						},
 					}
 				},
 				(Start, &RightParen) => return (Err("Unexpected ')'"), state),
@@ -136,13 +146,15 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 				(CollectArg, &LeftParen) => {
 					//do recursion
 					let (res, recur_state) = parse(token_iter);
-					if recur_state != SubcommandEnd {
-						panic!("ERROR");
-					} else {
-						match res {
-							Err(_) => return(res, state),
-							Ok(subcmd) => cmd.params.push(Param::Cmd(subcmd)),
-						}
+					match res {
+						Err(_) => return(res, state),
+						Ok(subcmd) => {
+							if recur_state != SubcommandEnd {
+								panic!("ERROR");
+							} else {
+								cmd.params.push(Param::Cmd(subcmd));
+							}
+						},
 					}
 				}
 
@@ -235,4 +247,23 @@ fn invoke_subcommand(command: &mut Command) -> String {
 		.expect("Failed to start command");
 
 	String::from_utf8(output.stdout).unwrap()*/ "fuck you".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn tokenize() {
+		use super::tokenize;
+		use super::Token::*;
+
+		assert_eq!(
+			[Cmd("echo"), Arg("lol"), LeftParen, Cmd("srnaeinei"), RightParen],
+			tokenize("echo lol (srnaeinei)").as_slice()
+		);
+
+		assert_eq!(
+			[LeftParen, RightParen],
+			tokenize("()").as_slice()
+		);
+	}
 }
