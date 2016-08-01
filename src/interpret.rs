@@ -1,12 +1,19 @@
 extern crate builtins;
 
+#[macro_use]
+use print_macros;
+
 
 pub fn read(command_line: &str) {
-	let token_list = tokenize(command_line);
-	let mut token_iter = token_list.iter();
-	match generate_tree(&mut token_iter) {
-		Ok(mut tree) => tree.execute_command(),
-		Err(err) => println!("{}", err),
+	match tokenize(command_line) {
+		Ok(token_list) => {
+			let mut token_iter = token_list.iter();
+			match generate_tree(&mut token_iter) {
+				Ok(mut tree) => tree.execute_command(),
+				Err(err) => println_stderr!("Parse error: {}", err),
+			}
+		},
+		Err(err) => println_stderr!("Tokenization error: {}", err),
 	}
 }
 
@@ -26,7 +33,7 @@ enum Token<'a, 'b> {
 	Arg(&'b str),
 }
 
-fn tokenize(command_line: &str) -> Vec<Token> {
+fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 	use self::TokenMachineState::*;
 	use self::Token::*;
 
@@ -43,16 +50,18 @@ fn tokenize(command_line: &str) -> Vec<Token> {
 				(Start, ')') => token_list.push(RightParen), // this is invalid but it's the parser's job to find it out
 				(Start, _) => state = StrCmd(i),
 
+				(StrCmd(_), '(') | (StrArg(_), '(') => return Err("Unexpected '(' in command or argument"),
+				(StrCmd(_), _) | (StrArg(_), _) => {},
+
 				(StrCmd(slice_start), ')') => {
 					token_list.push(Cmd(&command_line[slice_start..i]));
 					token_list.push(RightParen);
-					state = Start;
+					state = SeparateWs;
 				},
 				(StrCmd(slice_start), ' ') | (StrCmd(slice_start), '\t') => {
 					token_list.push(Cmd(&command_line[slice_start..i]));
 					state = SeparateWs;
 				},
-				(StrCmd(_), _) => {},
 
 				(SeparateWs, ' ') | (SeparateWs, '\t') => {},
 				(SeparateWs, ')') => {
@@ -74,7 +83,6 @@ fn tokenize(command_line: &str) -> Vec<Token> {
 					token_list.push(RightParen);
 					state = Start;
 				}
-				(StrArg(_), _) => {},
 			}
 		} else {
 			// there might be a last token undergoing the token creation process
@@ -88,7 +96,7 @@ fn tokenize(command_line: &str) -> Vec<Token> {
 		}
 	}
 
-	token_list
+	Ok(token_list)
 }
 
 #[derive(PartialEq, Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
@@ -106,7 +114,7 @@ fn generate_tree<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> Result<Command<'a>
 	let (res, state) = parse(token_iter);
 
 	if state != CollectArg && res.is_ok() { // accepting state when not doing recursion
-		Err("Parse error")
+		Err("Missing matching parenthese")
 	} else {
 		res
 	}
@@ -115,8 +123,7 @@ fn generate_tree<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> Result<Command<'a>
 fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'static str>, ParseMachineState) {
 	use self::ParseMachineState::*;
 	use self::Token::*;
-	use std::ptr;
-	use std::mem;
+	use std::{ptr, mem};
 
 	let mut state = Start;
 	let mut cmd = Command::new();
@@ -141,18 +148,19 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 						Ok(subcmd) => {
 							if recur_state != SubcommandEnd {
 								mem::forget(cmd.cmd);
-								return (Err("Error"), state);
+								return (Err("Error in subcommand"), state);
 							} else {
 								unsafe {
 									ptr::write(&mut cmd.cmd, Box::new(Param::Cmd(subcmd)));
 								}
+								state = CollectArg;
 							}
 						},
 					}
 				},
 				(Start, &RightParen) => {
 					mem::forget(cmd.cmd);
-					return (Err("Unexpected ')'"), state)
+					return (Err("Unexpected ')' at start of (sub)command"), state)
 				},
 				(Start, &Arg(_)) => unreachable!(), // if that happens the tokenizer is buggy
 
@@ -170,7 +178,7 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 						Err(_) => return (res, state),
 						Ok(subcmd) => {
 							if recur_state != SubcommandEnd {
-								panic!("ERROR");
+								return (Err("Error in subcommand"), state);
 							} else {
 								cmd.params.push(Param::Cmd(subcmd));
 							}
@@ -187,7 +195,7 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 
 	if state == Start {
 		mem::forget(cmd.cmd);
-		(Err("Empty commands are not allowed"), state)
+		(Err("Subcommand never closed"), state)
 	} else {
 		(Ok(cmd), state)
 	}
@@ -280,29 +288,69 @@ fn invoke_subcommand(command: &mut Command) -> String {
 
 #[cfg(test)]
 mod tests {
+	use super::tokenize;
+	use super::Token::*;
+
 	#[test]
-	fn tokenize() {
-		use super::tokenize;
-		use super::Token::*;
-
-		assert_eq!(
-			[Cmd("echo"), Arg("lol"), LeftParen, Cmd("srnaeinei"), RightParen],
-			tokenize("echo lol (srnaeinei)").as_slice()
-		);
-
+	fn empty_command() {
 		assert_eq!(
 			[LeftParen, RightParen],
-			tokenize("()").as_slice()
+			tokenize("()").unwrap().as_slice()
+		);
+	}
+
+	#[test]
+	fn tokenize_proper() {
+		assert_eq!(
+			[Cmd("echo"), Arg("lol"), LeftParen, Cmd("srnaeinei"), RightParen],
+			tokenize("echo lol (srnaeinei)").unwrap().as_slice()
 		);
 
 		assert_eq!(
 			[Cmd("echo")],
-			tokenize("echo").as_slice()
+			tokenize("echo").unwrap().as_slice()
 		);
 
 		assert_eq!(
 			[Cmd("echo"), Arg("lol")],
-			tokenize("echo lol").as_slice()
+			tokenize("echo lol").unwrap().as_slice()
 		);
+
+		assert_eq!(
+			[LeftParen, Cmd("echo"), RightParen, Arg("stuff")],
+			tokenize("(echo) stuff").unwrap().as_slice()
+		);
+	}
+	#[test]
+	fn tokenize_proper_though_not_for_the_parser() {
+		assert_eq!(
+			[LeftParen, LeftParen, LeftParen, Cmd("echo"), Arg("lol"), RightParen, RightParen, RightParen, Cmd("stuff")],
+			tokenize("(((echo lol))) stuff").unwrap().as_slice()
+		);
+		assert_eq!(
+			[Cmd("garbage"), RightParen],
+			tokenize("garbage)").unwrap().as_slice()
+		);
+	}
+
+	#[test]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+	fn tokenize_paren_in_cmd_middle() {
+		tokenize("ech(o").unwrap();
+	}
+	#[test]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+	fn tokenize_paren_in_arg_middle() {
+		tokenize("echo oops(typo").unwrap();
+	}
+	#[test]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+	fn tokenize_paren_in_cmd_end() {
+		tokenize("echo( stuff").unwrap();
+	}
+	#[test]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+	fn tokenize_paren_in_arg_end() {
+		tokenize("echo oops(").unwrap();
 	}
 }

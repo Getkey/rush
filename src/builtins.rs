@@ -4,8 +4,7 @@ mod print_macros;
 const TOO_MANY_ARGS: &'static str = "Error: Too many arguments were supplied";
 
 pub fn cd(args: &[&str]) {
-	use std::env;
-	use std::path;
+	use std::{env, path};
 
 	let path = match args.len() {
 		 0 => match env::home_dir() {
