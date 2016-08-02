@@ -1,8 +1,7 @@
 extern crate builtins;
 
-#[macro_use]
-use print_macros;
-
+use std::slice::Iter;
+use std::borrow::Cow;
 
 pub fn read(command_line: &str) {
 	match tokenize(command_line) {
@@ -50,9 +49,6 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 				(Start, ')') => token_list.push(RightParen), // this is invalid but it's the parser's job to find it out
 				(Start, _) => state = StrCmd(i),
 
-				(StrCmd(_), '(') | (StrArg(_), '(') => return Err("Unexpected '(' in command or argument"),
-				(StrCmd(_), _) | (StrArg(_), _) => {},
-
 				(StrCmd(slice_start), ')') => {
 					token_list.push(Cmd(&command_line[slice_start..i]));
 					token_list.push(RightParen);
@@ -64,10 +60,7 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 				},
 
 				(SeparateWs, ' ') | (SeparateWs, '\t') => {},
-				(SeparateWs, ')') => {
-					token_list.push(RightParen);
-					state = Start;
-				},
+				(SeparateWs, ')') => token_list.push(RightParen),
 				(SeparateWs, '(') => {
 					token_list.push(LeftParen);
 					state = Start;
@@ -81,8 +74,11 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 				(StrArg(slice_start), ')') => {
 					token_list.push(Arg(&command_line[slice_start..i]));
 					token_list.push(RightParen);
-					state = Start;
+					state = SeparateWs;
 				}
+
+				(StrCmd(_), '(') | (StrArg(_), '(') => return Err("Unexpected '(' in command or argument"),
+				(StrCmd(_), _) | (StrArg(_), _) => {},
 			}
 		} else {
 			// there might be a last token undergoing the token creation process
@@ -105,8 +101,6 @@ enum ParseMachineState {
 	CollectArg,
 	SubcommandEnd,
 }
-
-use std::slice::Iter;
 
 fn generate_tree<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> Result<Command<'a>, &'static str> {
 	use self::ParseMachineState::*;
@@ -217,42 +211,70 @@ impl<'a> Command<'a> {
 			}
 		}
 	}
-	fn get_final_arglist(&mut self) -> Vec<&str> {
-		let mut final_arglist: Vec<&str> = Vec::with_capacity(self.params.len());
+	fn get_final(&'a mut self) -> (String, Vec<String>) {
+		// the calls to `into_owned()` are ugly, is there a way to get rid of them?
+		let mut final_arglist: Vec<String> = Vec::with_capacity(self.params.len());
 
-		/*for arg in self.params.iter_mut() { // substitue subcommands recursively
-			let stdout = if let Param::Cmd(ref mut subcommand) = *arg {
-				Some(subcommand.execute_subcommand())
-			} else {
-				None
-			};
+		for arg in self.params.iter_mut() { // substitue subcommands recursively
+			final_arglist.push(arg.as_arg().into_owned());
+		}
 
-			if let Some(stdout) = stdout {
-				*arg = Param::Arg(stdout); // the datastructure holds the `String`
-			}
-
-			if let Param::Arg(ref arg_str) = *arg { // at this point this always happen because `Cmd` became `Arg`s
-				final_arglist.push(arg_str);
-			}
-		}*/
-
-		final_arglist
+		(self.cmd.as_arg().into_owned(), final_arglist)
 	}
-	fn execute_command(&mut self) {//returns stdout - possibly return a array of strings?
-		/*match &self.cmd[..] {
+	fn execute_command(&'a mut self) {//returns stdout - possibly return a array of strings?
+		let (cmd, arglist) = self.get_final();
+		let actual_arglist: Vec<&str> = arglist.iter().map(|arg| &arg[..]).collect();
+
+		match &cmd[..] {
 			"" => {},
-			/*"cd" => builtins::cd(&self.params),
-			"exit" => builtins::exit(&self.params),*/
-			_ => invoke_command(self),
-		};*/
+			"cd" => builtins::cd(&actual_arglist),
+			"exit" => builtins::exit(&actual_arglist),
+			_ => {
+				use std::process::Command;
+				match Command::new(cmd)
+					.args(&actual_arglist)
+					.spawn() {
+						Ok(mut subproc) => {
+							subproc.wait();
+						},
+						Err(err) => println_stderr!("{}", err),
+				}
+			},
+		};
 	}
-	fn execute_subcommand(&mut self) -> String {
-		/*match &self.cmd[..] {
-			/*"" => {},
-			"cd" => builtins::cd(&self.params),
-			"exit" => builtins::exit(&self.params),*/
-			_ => invoke_subcommand(self),
-		}*/ "fuck you".to_string()
+	fn execute_subcommand(&'a mut self) -> Cow<'a, str> {
+		let (cmd, arglist) = self.get_final();
+		let actual_arglist: Vec<&str> = arglist.iter().map(|arg| &arg[..]).collect();
+
+		return match &cmd[..] {
+			"" => Cow::Borrowed(""),
+			"cd" => {
+				builtins::cd(&actual_arglist);
+				Cow::Borrowed("")
+			},
+			"exit" => {
+				builtins::exit(&actual_arglist);
+				Cow::Borrowed("")
+			},
+			_ => {
+				use std::process::Command;
+				match Command::new(cmd)
+					.args(&actual_arglist)
+					.output() {
+						Ok(output) => {
+							use std::string::String;
+
+							unsafe {
+								Cow::Owned(String::from_utf8_unchecked(output.stdout))
+							}
+						},
+						Err(err) => {
+							println_stderr!("{}", err);
+							Cow::Borrowed("")
+						},
+				}
+			},
+		};
 	}
 }
 enum Param<'a> {
@@ -260,30 +282,13 @@ enum Param<'a> {
 	Cmd(Command<'a>),
 
 }
-fn invoke_command(command: &mut Command) {
-	use std::process::Command;
-	/*match Command::new(&command.cmd)
-		.args(&command.get_final_arglist())
-		.spawn() {
-			Ok(mut subproc) => {
-				subproc.wait();
-			},
-			Err(err) => println!("{}", err),
-	}*/
-}
-fn invoke_subcommand(command: &mut Command) -> String {
-	/*{
-		for arg in command.get_final_arglist() {
-			println!("shitty debugging: {}", arg);
+impl<'a> Param<'a> {
+	fn as_arg(&'a mut self) -> Cow<'a, str> {
+		match self {
+			&mut Param::Cmd(ref mut subcmd) => subcmd.execute_subcommand(),
+			&mut Param::Arg(arg_str) => Cow::Borrowed(arg_str),
 		}
 	}
-	use std::process::Command;
-	let output = Command::new(&command.cmd)
-		.args(&command.get_final_arglist())
-		.output()
-		.expect("Failed to start command");
-
-	String::from_utf8(output.stdout).unwrap()*/ "fuck you".to_string()
 }
 
 #[cfg(test)]
@@ -302,8 +307,8 @@ mod tests {
 	#[test]
 	fn tokenize_proper() {
 		assert_eq!(
-			[Cmd("echo"), Arg("lol"), LeftParen, Cmd("srnaeinei"), RightParen],
-			tokenize("echo lol (srnaeinei)").unwrap().as_slice()
+			[Cmd("echo"), Arg("foo"), LeftParen, Cmd("bar"), RightParen],
+			tokenize("echo foo (bar)").unwrap().as_slice()
 		);
 
 		assert_eq!(
@@ -312,19 +317,23 @@ mod tests {
 		);
 
 		assert_eq!(
-			[Cmd("echo"), Arg("lol")],
-			tokenize("echo lol").unwrap().as_slice()
+			[Cmd("echo"), Arg("foo")],
+			tokenize("echo foo").unwrap().as_slice()
 		);
 
 		assert_eq!(
-			[LeftParen, Cmd("echo"), RightParen, Arg("stuff")],
-			tokenize("(echo) stuff").unwrap().as_slice()
+			[LeftParen, Cmd("echo"), RightParen, Arg("foo")],
+			tokenize("(echo) foo").unwrap().as_slice()
+		);
+		assert_eq!(
+			[LeftParen, Cmd("echo"), Arg("echo"), RightParen, Arg("foo")],
+			tokenize("(echo echo) foo").unwrap().as_slice()
 		);
 	}
 	#[test]
 	fn tokenize_proper_though_not_for_the_parser() {
 		assert_eq!(
-			[LeftParen, LeftParen, LeftParen, Cmd("echo"), Arg("lol"), RightParen, RightParen, RightParen, Cmd("stuff")],
+			[LeftParen, LeftParen, LeftParen, Cmd("echo"), Arg("lol"), RightParen, RightParen, RightParen, Arg("stuff")],
 			tokenize("(((echo lol))) stuff").unwrap().as_slice()
 		);
 		assert_eq!(
