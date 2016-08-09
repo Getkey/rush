@@ -1,9 +1,10 @@
 [package]
 name = "rush"
 version = "0.1.0"
+license = "Apache-2.0"
 
 [lib]
 name = "builtins"
 
 [dependencies]
-termios = "0.2"
+termios = "0.x"
