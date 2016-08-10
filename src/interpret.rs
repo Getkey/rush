@@ -20,8 +20,12 @@ pub fn read(command_line: &str) {
 enum TokenMachineState {
 	Start,
 	StrCmd(usize),
+	StrCmdFirstQuote,
+	QuotedStrCmd(usize),
 	SeparateWs,
 	StrArg(usize),
+	StrArgFirstQuote,
+	QuotedStrArg(usize),
 }
 
 #[derive(PartialEq, Debug)] // used for tests
@@ -47,7 +51,16 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 				(Start, ' ') | (Start, '\t') => {},
 				(Start, '(') => token_list.push(LeftParen),
 				(Start, ')') => token_list.push(RightParen), // this is invalid but it's the parser's job to find it out
+				(Start, '\'') => state = StrCmdFirstQuote,
 				(Start, _) => state = StrCmd(i),
+
+				(StrCmdFirstQuote, '\'') => token_list.push(Cmd("")),
+				(StrCmdFirstQuote, _) => state = QuotedStrCmd(i),
+
+				(QuotedStrCmd(slice_start), '\'') => {
+					token_list.push(Cmd(&command_line[slice_start..i]));
+					state = SeparateWs;
+				},
 
 				(StrCmd(slice_start), ')') => {
 					token_list.push(Cmd(&command_line[slice_start..i]));
@@ -65,7 +78,16 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 					token_list.push(LeftParen);
 					state = Start;
 				},
+				(SeparateWs, '\'') => state = StrArgFirstQuote,
 				(SeparateWs, _) => state = StrArg(i),
+
+				(StrArgFirstQuote, '\'') => token_list.push(Arg("")),
+				(StrArgFirstQuote, _) => state = QuotedStrArg(i),
+
+				(QuotedStrArg(slice_start), '\'') => {
+					token_list.push(Arg(&command_line[slice_start..i]));
+					state = SeparateWs;
+				},
 
 				(StrArg(slice_start), ' ') | (StrArg(slice_start), '\t') => {
 					token_list.push(Arg(&command_line[slice_start..i]));
@@ -78,7 +100,7 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 				}
 
 				(StrCmd(_), '(') | (StrArg(_), '(') => return Err("Unexpected '(' in command or argument"),
-				(StrCmd(_), _) | (StrArg(_), _) => {},
+				(StrCmd(_), _) | (StrArg(_), _) | (QuotedStrCmd(_), _) | (QuotedStrArg(_), _) => {},
 			}
 		} else {
 			// there might be a last token undergoing the token creation process
@@ -86,6 +108,7 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 			match state {
 				StrCmd(slice_start) => token_list.push(Cmd(&command_line[slice_start..])),
 				StrArg(slice_start) => token_list.push(Arg(&command_line[slice_start..])),
+				StrArgFirstQuote | StrCmdFirstQuote | QuotedStrCmd(_) | QuotedStrArg(_) => return Err("Unclosed string literal"),
 				_ => {},
 			}
 			break;
@@ -330,6 +353,45 @@ mod tests {
 			tokenize("(echo echo) foo").unwrap().as_slice()
 		);
 	}
+
+	#[test]
+	fn tokenize_string_literal() {
+		assert_eq!(
+			[Cmd("echo hole"), Arg("stuff")],
+			tokenize("'echo hole' stuff").unwrap().as_slice()
+		);
+		assert_eq!(
+			[Cmd("echo"), Arg("foo bar")],
+			tokenize("echo 'foo bar'").unwrap().as_slice()
+		);
+		assert_eq!(
+			[Cmd("echo"), Arg("foo"), Arg("bar")],
+			tokenize("'echo' 'foo' 'bar'").unwrap().as_slice()
+		);
+		assert_eq!(
+			[Cmd("foo bar               baz"), Arg("qux"), Arg(" quux")],
+			tokenize("'foo bar               baz' qux ' quux'").unwrap().as_slice()
+		);
+	}
+
+	#[test]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value: \"Unclosed string literal\"")]
+	fn tokenize_unclosed_string_literal_cmd() {
+		tokenize("'echo foo").unwrap();
+	}
+
+	#[test]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value: \"Unclosed string literal\"")]
+	fn tokenize_unclosed_string_literal_arg() {
+		tokenize("echo 'foo bar").unwrap();
+	}
+
+	#[test]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value: \"Unclosed string literal\"")]
+	fn tokenize_unclosed_string_literal_end() {
+		tokenize("echo '").unwrap();
+	}
+
 	#[test]
 	fn tokenize_proper_though_not_for_the_parser() {
 		assert_eq!(
@@ -343,22 +405,22 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value: \"Unexpected \\'(\\' in command or argument\"")]
 	fn tokenize_paren_in_cmd_middle() {
 		tokenize("ech(o").unwrap();
 	}
 	#[test]
-	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value: \"Unexpected \\'(\\' in command or argument\"")]
 	fn tokenize_paren_in_arg_middle() {
 		tokenize("echo oops(typo").unwrap();
 	}
 	#[test]
-	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value: \"Unexpected \\'(\\' in command or argument\"")]
 	fn tokenize_paren_in_cmd_end() {
 		tokenize("echo( stuff").unwrap();
 	}
 	#[test]
-	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+	#[should_panic(expected = "called `Result::unwrap()` on an `Err` value: \"Unexpected \\'(\\' in command or argument\"")]
 	fn tokenize_paren_in_arg_end() {
 		tokenize("echo oops(").unwrap();
 	}
