@@ -1,13 +1,16 @@
 use history;
 
-struct AnsiEsc {
-	csi: String,
-	n: String,
+#[derive(Copy, Clone)]
+enum LineState {
+	Start,
+	Escape,
+	CsiComplete,
+	CollectNum(usize),
 }
 pub struct Line {
 	pub line: Vec<char>,
 	cursor_pos: usize,
-	esc_seq: AnsiEsc,
+	state: LineState,
 	pub history: history::History,
 }
 impl Line {
@@ -15,7 +18,7 @@ impl Line {
 		Line {
 			line: Vec::new(),
 			cursor_pos: 0,
-			esc_seq: AnsiEsc { csi: String::new(), n: String::new() },
+			state: LineState::Start,
 			history: history::History::new(),
 		}
 	}
@@ -63,16 +66,17 @@ impl Line {
 		self.line.clear();
 		self.cursor_pos = 0;
 	}
-	fn move_cursor_left(&mut self, seq: &str) {
-		if self.cursor_pos != 0 {
-			print_flush!("{}", seq);
-			self.cursor_pos -= 1;
+	fn move_cursor_left(&mut self, step: usize) {
+		if let Some(new_pos) = self.cursor_pos.checked_sub(step) {
+			print_flush!("\u{1b}[{}D", step);
+			self.cursor_pos = new_pos;
 		}
 	}
-	fn move_cursor_right(&mut self, seq: &str) {
-		if self.cursor_pos != self.line.len() {
-			print_flush!("{}", seq);
-			self.cursor_pos += 1;
+	fn move_cursor_right(&mut self, step: usize) {
+		let new_pos = self.cursor_pos + step;
+		if new_pos <= self.line.len() {
+			print_flush!("\u{1b}[{}C", step);
+			self.cursor_pos = new_pos;
 		}
 	}
 	fn redraw(&self) {
@@ -86,58 +90,60 @@ impl Line {
 			io::stdout().flush().ok();
 		}
 	}
-	pub fn append(&mut self, chara: char) {
-		if !self.esc_seq.csi.is_empty() {
-			if self.esc_seq.csi == "\u{1b}" && chara == '[' {
-				self.esc_seq.csi.push(chara);
-			} else if self.esc_seq.csi == "\u{1b}[" || self.esc_seq.csi == "\u{9b}" {
-				if chara >= '0' && chara <= '9' {
-					self.esc_seq.n.push(chara);
-				} else {
-					match chara {
-						'A' => {
-							self.history.previous();
-							if let Some(hist_line) = self.history.get_line() {//get_line returns None if history.history.len() == 0
-								self.line = hist_line.chars().collect();
-								self.cursor_pos = self.line.len();
-								self.redraw();
-							}
-						},
-						'B' => {
-							self.history.next();
-							if let Some(hist_line) = self.history.get_line() {
-								self.line = hist_line.chars().collect();
-								self.cursor_pos = self.line.len();
-							} else {
-								self.line.clear();
-								self.cursor_pos = 0;
-								//TODO: make redrawing more efficient in this case
-							}
-							self.redraw();
-						},
-						'C' => {
-							let seq = format!("{}{}C", self.esc_seq.csi, self.esc_seq.n);
-							self.move_cursor_right(&seq);
-						},
-						'D' => {
-							let seq = format!("{}{}D", self.esc_seq.csi, self.esc_seq.n);
-							self.move_cursor_left(&seq);
-						},
-						_ => {},
-					}
-					self.esc_seq.csi.clear();
-					self.esc_seq.n.clear();
+	fn interpret_seq(&mut self, n: usize, chara: char) {
+		match chara {
+			'A' => {
+				self.history.previous();
+				if let Some(hist_line) = self.history.get_line() {//get_line returns None if history.history.len() == 0
+					self.line = hist_line.chars().collect();
+					self.cursor_pos = self.line.len();
+					self.redraw();
 				}
+			},
+			'B' => {
+				self.history.next();
+				if let Some(hist_line) = self.history.get_line() {
+					self.line = hist_line.chars().collect();
+					self.cursor_pos = self.line.len();
+				} else {
+					self.line.clear();
+					self.cursor_pos = 0;
+					//TODO: make redrawing more efficient in this case
+				}
+				self.redraw();
+			},
+			'C' => self.move_cursor_right(n),
+			'D' => self.move_cursor_left(n),
+			'H' => {
+				let step = self.cursor_pos;
+				self.move_cursor_left(step);
+			},
+			'F' => {
+				let step = self.line.len() - self.cursor_pos;
+				self.move_cursor_right(step);
+			},
+			_ => {},
+		}
 
-			}
-		} else if chara.is_control() {
-			if chara == '\u{7f}' {
-				self.del_prev_char();
-			} else if chara == '\u{1b}' || chara == '\u{9b}' {
-				self.esc_seq.csi = chara.to_string();
-			}
-		} else {
-			self.push(chara);
+		self.state = LineState::Start;
+	}
+	pub fn append(&mut self, chara: char) {
+		use self::LineState::*;
+
+		match (self.state, chara) {
+			(Start, '\u{1b}') => self.state = Escape,
+			(Start, '\u{9b}') => self.state = CsiComplete,
+			(Start, '\u{7f}') => self.del_prev_char(),
+			(Start, _) => self.push(chara),
+
+			(Escape, '[') | (Escape, 'O') => self.state = CsiComplete,
+			(Escape, _) => self.state = Start, // ignore lone escape character
+
+			(CsiComplete, '0'...'9') => self.state = CollectNum(chara.to_digit(10).unwrap() as usize),
+			(CsiComplete, _) => self.interpret_seq(1, chara),
+
+			(CollectNum(ref mut n), '0'...'9') => *n = *n*10 + chara.to_digit(10).unwrap() as usize,
+			(CollectNum(n), _) => self.interpret_seq(n, chara),
 		}
 	}
 }
