@@ -3,12 +3,14 @@ extern crate builtins;
 use std::slice::Iter;
 use std::borrow::Cow;
 
+type CmdLine<'a> = Vec<Param<'a>>;
+
 pub fn read(command_line: &str) {
 	match tokenize(command_line) {
 		Ok(token_list) => {
 			let mut token_iter = token_list.iter();
 			match generate_tree(&mut token_iter) {
-				Ok(mut tree) => tree.execute_command(),
+				Ok(ref tree) => execute_command(tree),
 				Err(err) => println_stderr!("Parse error: {}", err),
 			}
 		},
@@ -16,24 +18,20 @@ pub fn read(command_line: &str) {
 	}
 }
 
-#[derive(Copy, Clone)] // this enum takes 8b therefore copying it is better than having a 32b or 64b pointer
+#[derive(Copy, Clone)] // this enum takes only 1B more than usize so copying it is no big deal
 enum TokenMachineState {
 	Start,
-	StrCmd(usize),
-	StrCmdFirstQuote,
-	QuotedStrCmd(usize),
 	SeparateWs,
-	StrArg(usize),
-	StrArgFirstQuote,
-	QuotedStrArg(usize),
+	StrWord(usize),
+	WordFirstQuote,
+	QuotedWord(usize),
 }
 
 #[derive(PartialEq, Debug)] // used for tests
-enum Token<'a, 'b> {
+enum Token<'a> {
 	LeftParen,
 	RightParen,
-	Cmd(&'a str),
-	Arg(&'b str),
+	Word(&'a str),
 }
 
 fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
@@ -51,26 +49,28 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 				(Start, ' ') | (Start, '\t') => {},
 				(Start, '(') => token_list.push(LeftParen),
 				(Start, ')') => token_list.push(RightParen), // this is invalid but it's the parser's job to find it out
-				(Start, '\'') => state = StrCmdFirstQuote,
-				(Start, _) => state = StrCmd(i),
+				(Start, '\'') => state = WordFirstQuote,
+				(Start, _) => state = StrWord(i),
 
-				(StrCmdFirstQuote, '\'') => token_list.push(Cmd("")),
-				(StrCmdFirstQuote, _) => state = QuotedStrCmd(i),
+				(WordFirstQuote, '\'') => token_list.push(Word("")),
+				(WordFirstQuote, _) => state = QuotedWord(i),
 
-				(QuotedStrCmd(slice_start), '\'') => {
-					token_list.push(Cmd(&command_line[slice_start..i]));
+				(QuotedWord(slice_start), '\'') => {
+					token_list.push(Word(&command_line[slice_start..i]));
 					state = SeparateWs;
 				},
 
-				(StrCmd(slice_start), ')') => {
-					token_list.push(Cmd(&command_line[slice_start..i]));
+				(StrWord(slice_start), ')') => {
+					token_list.push(Word(&command_line[slice_start..i]));
 					token_list.push(RightParen);
 					state = SeparateWs;
 				},
-				(StrCmd(slice_start), ' ') | (StrCmd(slice_start), '\t') => {
-					token_list.push(Cmd(&command_line[slice_start..i]));
+				(StrWord(slice_start), ' ') | (StrWord(slice_start), '\t') => {
+					token_list.push(Word(&command_line[slice_start..i]));
 					state = SeparateWs;
 				},
+				(StrWord(_), '(') => return Err("Unexpected '(' in command or argument"),
+				(StrWord(_), _) | (QuotedWord(_), _) => {},
 
 				(SeparateWs, ' ') | (SeparateWs, '\t') => {},
 				(SeparateWs, ')') => token_list.push(RightParen),
@@ -78,37 +78,16 @@ fn tokenize(command_line: &str) -> Result<Vec<Token>, &'static str> {
 					token_list.push(LeftParen);
 					state = Start;
 				},
-				(SeparateWs, '\'') => state = StrArgFirstQuote,
-				(SeparateWs, _) => state = StrArg(i),
+				(SeparateWs, '\'') => state = WordFirstQuote,
+				(SeparateWs, _) => state = StrWord(i),
 
-				(StrArgFirstQuote, '\'') => token_list.push(Arg("")),
-				(StrArgFirstQuote, _) => state = QuotedStrArg(i),
-
-				(QuotedStrArg(slice_start), '\'') => {
-					token_list.push(Arg(&command_line[slice_start..i]));
-					state = SeparateWs;
-				},
-
-				(StrArg(slice_start), ' ') | (StrArg(slice_start), '\t') => {
-					token_list.push(Arg(&command_line[slice_start..i]));
-					state = SeparateWs;
-				},
-				(StrArg(slice_start), ')') => {
-					token_list.push(Arg(&command_line[slice_start..i]));
-					token_list.push(RightParen);
-					state = SeparateWs;
-				}
-
-				(StrCmd(_), '(') | (StrArg(_), '(') => return Err("Unexpected '(' in command or argument"),
-				(StrCmd(_), _) | (StrArg(_), _) | (QuotedStrCmd(_), _) | (QuotedStrArg(_), _) => {},
 			}
 		} else {
 			// there might be a last token undergoing the token creation process
 			// it has to be appended to the token list
 			match state {
-				StrCmd(slice_start) => token_list.push(Cmd(&command_line[slice_start..])),
-				StrArg(slice_start) => token_list.push(Arg(&command_line[slice_start..])),
-				StrArgFirstQuote | StrCmdFirstQuote | QuotedStrCmd(_) | QuotedStrArg(_) => return Err("Unclosed string literal"),
+				StrWord(slice_start) => token_list.push(Word(&command_line[slice_start..])),
+				WordFirstQuote | QuotedWord(_) => return Err("Unclosed string literal"),
 				_ => {},
 			}
 			break;
@@ -125,7 +104,7 @@ enum ParseMachineState {
 	SubcommandEnd,
 }
 
-fn generate_tree<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> Result<Command<'a>, &'static str> {
+fn generate_tree<'a>(token_iter: &mut Iter<Token<'a>>) -> Result<CmdLine<'a>, &'static str> {
 	use self::ParseMachineState::*;
 
 	let (res, state) = parse(token_iter);
@@ -137,59 +116,23 @@ fn generate_tree<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> Result<Command<'a>
 	}
 }
 
-fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'static str>, ParseMachineState) {
+fn parse<'a>(token_iter: &mut Iter<Token<'a>>) -> (Result<CmdLine<'a>, &'static str>, ParseMachineState) {
 	use self::ParseMachineState::*;
 	use self::Token::*;
-	use std::{ptr, mem};
+	use self::Param::*;
 
 	let mut state = Start;
-	let mut cmd = Command::new();
+	let mut cmd_line: CmdLine = Vec::new();
 
 	loop {
 		if let Some(token) = token_iter.next() {
 			match (state, token) {
-				(Start, &Cmd(cmd_name)) => {
-					unsafe {
-						ptr::write(&mut cmd.cmd, Box::new(Param::Arg(cmd_name)));
-					}
+				(Start, &Word(cmd_name)) | (CollectArg, &Word(cmd_name)) => {
+					cmd_line.push(Arg(cmd_name));
 					state = CollectArg;
 				},
-				(Start, &LeftParen) => {
+				(Start, &LeftParen) | (CollectArg, &LeftParen) => {
 					// do recursion
-					let (res, recur_state) = parse(token_iter);
-					match res {
-						Err(_) => {
-							mem::forget(cmd.cmd);
-							return (res, state)
-						},
-						Ok(subcmd) => {
-							if recur_state != SubcommandEnd {
-								mem::forget(cmd.cmd);
-								return (Err("Error in subcommand"), state);
-							} else {
-								unsafe {
-									ptr::write(&mut cmd.cmd, Box::new(Param::Cmd(subcmd)));
-								}
-								state = CollectArg;
-							}
-						},
-					}
-				},
-				(Start, &RightParen) => {
-					mem::forget(cmd.cmd);
-					return (Err("Unexpected ')' at start of (sub)command"), state)
-				},
-				(Start, &Arg(_)) => unreachable!(), // if that happens the tokenizer is buggy
-
-				(CollectArg, &Arg(arg_str)) => {
-					cmd.params.push(Param::Arg(arg_str));
-				}
-				(CollectArg, &Cmd(_)) => unreachable!(), // if that happens the tokenizer is buggy
-				(CollectArg, &RightParen) => {
-					return (Ok(cmd), SubcommandEnd);
-				},
-				(CollectArg, &LeftParen) => {
-					//do recursion
 					let (res, recur_state) = parse(token_iter);
 					match res {
 						Err(_) => return (res, state),
@@ -197,11 +140,19 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 							if recur_state != SubcommandEnd {
 								return (Err("Error in subcommand"), state);
 							} else {
-								cmd.params.push(Param::Cmd(subcmd));
+								cmd_line.push(Cmd(subcmd));
+								state = CollectArg;
 							}
 						},
 					}
-				}
+				},
+				(Start, &RightParen) => {
+					return (Err("Unexpected empty subcommand"), state)
+				},
+
+				(CollectArg, &RightParen) => {
+					return (Ok(cmd_line), SubcommandEnd);
+				},
 
 				(SubcommandEnd, _) => unreachable!(),
 			}
@@ -211,105 +162,89 @@ fn parse<'a>(token_iter: &mut Iter<Token<'a, 'a>>) -> (Result<Command<'a>, &'sta
 	}
 
 	if state == Start {
-		mem::forget(cmd.cmd);
 		(Err("Subcommand never closed"), state)
 	} else {
-		(Ok(cmd), state)
+		(Ok(cmd_line), state)
 	}
 }
 
 
-struct Command<'a> {
-	cmd: Box<Param<'a>>,
-	params: Vec<Param<'a>>,
-}
-impl<'a> Command<'a> {
-	fn new() -> Command<'a> {
-		use std::mem;
 
-		unsafe {
-			Command {
-				cmd: mem::uninitialized(),
-				params: Vec::new(),
+fn get_final<'a>(cmd_line: &'a CmdLine<'a>) -> Vec<String> {
+	// the calls to `into_owned()` are ugly, is there a way to get rid of them?
+	let mut final_arglist: Vec<String> = Vec::with_capacity(cmd_line.len());
+
+	for arg in cmd_line.iter() { // substitue subcommands recursively
+		final_arglist.push(arg.as_arg().into_owned());
+	}
+
+	final_arglist
+}
+fn execute_command<'a>(cmd_line: &'a CmdLine<'a>) {//returns stdout - possibly return a array of strings?
+	let arglist = get_final(cmd_line);
+	let actual_arglist: Vec<&str> = arglist.iter().map(|arg| &arg[..]).collect();
+
+	match actual_arglist[0] { // there is always at least a command
+		"" => {},
+		"cd" => builtins::cd(&actual_arglist[1..]),
+		"exit" => builtins::exit(&actual_arglist[1..]),
+		_ => {
+			use std::process::Command;
+			match Command::new(actual_arglist[0])
+				.args(&actual_arglist[1..])
+				.spawn() {
+					Ok(mut subproc) => {
+						subproc.wait();
+					},
+					Err(err) => println_stderr!("{}", err),
 			}
-		}
-	}
-	fn get_final(&'a mut self) -> (String, Vec<String>) {
-		// the calls to `into_owned()` are ugly, is there a way to get rid of them?
-		let mut final_arglist: Vec<String> = Vec::with_capacity(self.params.len());
+		},
+	};
+}
+fn execute_subcommand<'a>(cmd_line: &CmdLine<'a>) -> Cow<'a, str> {
+	let arglist = get_final(cmd_line);
+	let actual_arglist: Vec<&str> = arglist.iter().map(|arg| &arg[..]).collect();
 
-		for arg in self.params.iter_mut() { // substitue subcommands recursively
-			final_arglist.push(arg.as_arg().into_owned());
-		}
+	return match actual_arglist[0] { // ther is always at least a command
+		"" => Cow::Borrowed(""),
+		"cd" => {
+			builtins::cd(&actual_arglist[1..]);
+			Cow::Borrowed("")
+		},
+		"exit" => {
+			builtins::exit(&actual_arglist[1..]);
+			Cow::Borrowed("")
+		},
+		_ => {
+			use std::process::Command;
+			match Command::new(actual_arglist[0])
+				.args(&actual_arglist[1..])
+				.output() {
+					Ok(output) => {
+						use std::string::String;
 
-		(self.cmd.as_arg().into_owned(), final_arglist)
-	}
-	fn execute_command(&'a mut self) {//returns stdout - possibly return a array of strings?
-		let (cmd, arglist) = self.get_final();
-		let actual_arglist: Vec<&str> = arglist.iter().map(|arg| &arg[..]).collect();
-
-		match &cmd[..] {
-			"" => {},
-			"cd" => builtins::cd(&actual_arglist),
-			"exit" => builtins::exit(&actual_arglist),
-			_ => {
-				use std::process::Command;
-				match Command::new(cmd)
-					.args(&actual_arglist)
-					.spawn() {
-						Ok(mut subproc) => {
-							subproc.wait();
-						},
-						Err(err) => println_stderr!("{}", err),
-				}
-			},
-		};
-	}
-	fn execute_subcommand(&'a mut self) -> Cow<'a, str> {
-		let (cmd, arglist) = self.get_final();
-		let actual_arglist: Vec<&str> = arglist.iter().map(|arg| &arg[..]).collect();
-
-		return match &cmd[..] {
-			"" => Cow::Borrowed(""),
-			"cd" => {
-				builtins::cd(&actual_arglist);
-				Cow::Borrowed("")
-			},
-			"exit" => {
-				builtins::exit(&actual_arglist);
-				Cow::Borrowed("")
-			},
-			_ => {
-				use std::process::Command;
-				match Command::new(cmd)
-					.args(&actual_arglist)
-					.output() {
-						Ok(output) => {
-							use std::string::String;
-
-							unsafe {
-								Cow::Owned(String::from_utf8_unchecked(output.stdout))
-							}
-						},
-						Err(err) => {
-							println_stderr!("{}", err);
-							Cow::Borrowed("")
-						},
-				}
-			},
-		};
-	}
+						unsafe {
+							Cow::Owned(String::from_utf8_unchecked(output.stdout))
+						}
+					},
+					Err(err) => {
+						println_stderr!("{}", err);
+						Cow::Borrowed("")
+					},
+			}
+		},
+	};
 }
 enum Param<'a> {
 	Arg(&'a str),
-	Cmd(Command<'a>),
+	Cmd(CmdLine<'a>),
 
 }
 impl<'a> Param<'a> {
-	fn as_arg(&'a mut self) -> Cow<'a, str> {
+	fn as_arg(&'a self) -> Cow<'a, str> {
 		match self {
-			&mut Param::Cmd(ref mut subcmd) => subcmd.execute_subcommand(),
-			&mut Param::Arg(arg_str) => Cow::Borrowed(arg_str),
+			&Param::Cmd(ref subcmd) => execute_subcommand(subcmd),
+			&Param::Arg(arg_str) => Cow::Borrowed(arg_str),
 		}
 	}
 }
@@ -330,26 +265,26 @@ mod tests {
 	#[test]
 	fn tokenize_proper() {
 		assert_eq!(
-			[Cmd("echo"), Arg("foo"), LeftParen, Cmd("bar"), RightParen],
+			[Word("echo"), Word("foo"), LeftParen, Word("bar"), RightParen],
 			tokenize("echo foo (bar)").unwrap().as_slice()
 		);
 
 		assert_eq!(
-			[Cmd("echo")],
+			[Word("echo")],
 			tokenize("echo").unwrap().as_slice()
 		);
 
 		assert_eq!(
-			[Cmd("echo"), Arg("foo")],
+			[Word("echo"), Word("foo")],
 			tokenize("echo foo").unwrap().as_slice()
 		);
 
 		assert_eq!(
-			[LeftParen, Cmd("echo"), RightParen, Arg("foo")],
+			[LeftParen, Word("echo"), RightParen, Word("foo")],
 			tokenize("(echo) foo").unwrap().as_slice()
 		);
 		assert_eq!(
-			[LeftParen, Cmd("echo"), Arg("echo"), RightParen, Arg("foo")],
+			[LeftParen, Word("echo"), Word("echo"), RightParen, Word("foo")],
 			tokenize("(echo echo) foo").unwrap().as_slice()
 		);
 	}
@@ -357,19 +292,19 @@ mod tests {
 	#[test]
 	fn tokenize_string_literal() {
 		assert_eq!(
-			[Cmd("echo hole"), Arg("stuff")],
+			[Word("echo hole"), Word("stuff")],
 			tokenize("'echo hole' stuff").unwrap().as_slice()
 		);
 		assert_eq!(
-			[Cmd("echo"), Arg("foo bar")],
+			[Word("echo"), Word("foo bar")],
 			tokenize("echo 'foo bar'").unwrap().as_slice()
 		);
 		assert_eq!(
-			[Cmd("echo"), Arg("foo"), Arg("bar")],
+			[Word("echo"), Word("foo"), Word("bar")],
 			tokenize("'echo' 'foo' 'bar'").unwrap().as_slice()
 		);
 		assert_eq!(
-			[Cmd("foo bar               baz"), Arg("qux"), Arg(" quux")],
+			[Word("foo bar               baz"), Word("qux"), Word(" quux")],
 			tokenize("'foo bar               baz' qux ' quux'").unwrap().as_slice()
 		);
 	}
@@ -395,11 +330,11 @@ mod tests {
 	#[test]
 	fn tokenize_proper_though_not_for_the_parser() {
 		assert_eq!(
-			[LeftParen, LeftParen, LeftParen, Cmd("echo"), Arg("lol"), RightParen, RightParen, RightParen, Arg("stuff")],
+			[LeftParen, LeftParen, LeftParen, Word("echo"), Word("lol"), RightParen, RightParen, RightParen, Word("stuff")],
 			tokenize("(((echo lol))) stuff").unwrap().as_slice()
 		);
 		assert_eq!(
-			[Cmd("garbage"), RightParen],
+			[Word("garbage"), RightParen],
 			tokenize("garbage)").unwrap().as_slice()
 		);
 	}
