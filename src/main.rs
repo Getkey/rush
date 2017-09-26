@@ -1,4 +1,3 @@
-#![feature(libc)]
 #![feature(io)]//unstable io
 
 extern crate libc;
@@ -16,7 +15,7 @@ use std::fs::File;
 
 macro_rules! err_exit {
 	($err:expr) => ({
-		println_stderr!("{}", $err);
+		eprintln!("{}", $err);
 		std::process::exit(1);
 	});
 }

@@ -31,7 +31,8 @@ If it doesn't make it hard for the user to reason about what they are doing (*co
 
 ## Syntax
 
-*Note that most of the following is yet unimplemented.*
+_Note that most of the following is yet unimplemented_, **and wouldn't actually work**.
+This is currently just a (bad) draft.
 
 ### Commands
 
@@ -160,7 +161,7 @@ Except when passed to the special commands `echostrm` and `set`, when a stream i
 mkdir (echo foo) # creates a folder foo
 ```
 
-When the output contains a literal newlines, it is splited into a list of strings.
+When the output contains a literal newlines, it is split into a list of strings.
 
 ```Rush
 mkdir (echo foo bar) # creates a folder "foo bar"
@@ -175,7 +176,7 @@ The exit status can be collected in a string with `[` and `]`.
 echo [true] # 1
 ```
 
-You will see that this is especially usefull for conditons.
+You will see that this is especially useful for conditions.
 
 #### Both
 
@@ -210,7 +211,7 @@ set foo (split ' ' 'wow this command is awesome!')
 ### `echostrm`
 
 Except with `echostrm` (and `set`), when a stream is passed as a parameter to a command, the shell waits for it to end, then collect the list of strings it emitted, and pass it as arguments.
-With `echostrm`, the stream is emitted as its ostrm in real-time.
+With `echostrm`, the stream is emitted as its ostream in real-time.
 
 ```Rush
 set $stdstrm {strm {
@@ -234,7 +235,7 @@ echostrm $stdstrm | cat
 
 ### `parallel`
 
-This is usefull when two commands can be paralelized.
+This is useful when two commands can be parallelized.
 ```Rush
 parallel
 	{

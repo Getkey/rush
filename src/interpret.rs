@@ -11,10 +11,10 @@ pub fn read(command_line: &str) {
 			let mut token_iter = token_list.iter();
 			match generate_tree(&mut token_iter) {
 				Ok(ref tree) => execute_command(tree),
-				Err(err) => println_stderr!("Parse error: {}", err),
+				Err(err) => eprintln!("Parse error: {}", err),
 			}
 		},
-		Err(err) => println_stderr!("Tokenization error: {}", err),
+		Err(err) => eprintln!("Tokenization error: {}", err),
 	}
 }
 
@@ -194,9 +194,12 @@ fn execute_command<'a>(cmd_line: &'a CmdLine<'a>) {//returns stdout - possibly r
 				.args(&actual_arglist[1..])
 				.spawn() {
 					Ok(mut subproc) => {
-						subproc.wait();
+						match subproc.wait() {
+							Ok(_) => {},
+							Err(err) => eprintln!("Program exited with error code: {:?}", err.kind()),
+						}
 					},
-					Err(err) => println_stderr!("{}", err),
+					Err(err) => eprintln!("{}", err),
 			}
 		},
 	};
@@ -228,7 +231,7 @@ fn execute_subcommand<'a>(cmd_line: &CmdLine<'a>) -> Cow<'a, str> {
 						}
 					},
 					Err(err) => {
-						println_stderr!("{}", err);
+						eprintln!("{}", err);
 						Cow::Borrowed("")
 					},
 			}
